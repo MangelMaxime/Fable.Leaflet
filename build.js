@@ -153,6 +153,9 @@ class Runner {
         for (const task of this.tasks) {
             try {
                 success = await task.run();
+
+                if (!success)
+                    break;
             } catch (error) {
                 console.log(error);
                 success = false;
@@ -207,6 +210,19 @@ const build =
         noRestore: true
     }));
 
+const upgradeVersion =
+    new Task("Upgrade version", async () => {
+        const version = await getLastVersion();
+        const projectFile = path.join(__dirname, "src", `${projectName}.fsproj`);
+        const versionInProjectFileRegex = /(<(Version|PackageVersion)>)([\w\d.-]+)(<\/(Version|PackageVersion)>)/gm;
+        const updatedContent =
+            fs.readFileSync(projectFile)
+                .toString()
+                .replace(versionInProjectFileRegex, `$1${version}$4`);
+
+        fs.writeFileSync(projectFile, updatedContent);
+    });
+
 const pack =
     new Task("Package", () => Dotnet.pack({
         cwd: "src",
@@ -216,24 +232,7 @@ const pack =
 
 const publishToNuget =
     new Task("Publish", async () => {
-        const versionRegx = /^## ?\[?v?([\w\d.-]+\.[\w\d.-]+[a-zA-Z0-9])\]?/gm;
-
-        const fileContent = fs.readFileSync(path.join(__dirname, "CHANGELOG.md")).toString();
-
-        const m = versionRegx.exec(fileContent);
-        if (m === null) {
-            throw "No valid version found in the CHANGELOG";
-        }
-
-        const version = m[1];
-        const projectFile = path.join(__dirname, "src", `${projectName}.fsproj`);
-        const versionInProjectFileRegex = /(<(Version|PackageVersion)>)([\w\d.-]+)(<\/(Version|PackageVersion)>)/gm;
-        const updatedContent =
-            fs.readFileSync(projectFile)
-                .toString()
-                .replace(versionInProjectFileRegex, `$1${version}$4`);
-
-        fs.writeFileSync(projectFile, updatedContent);
+        const version = await getLastVersion();
 
         if (process.env.NUGET_KEY === undefined)
             throw "The Nuget API key must be set in a NUGET_KEY environmental variable"
@@ -247,19 +246,19 @@ const publishToNuget =
 
 const releaseToGithub =
     new Task("Release", async () => {
-        const lastVersion = await getLastVersion();
+        const version = await getLastVersion();
         const changelog = await parseChangelog({
             filePath: path.join(__dirname, "CHANGELOG.md")
         });
         const versionInfo =
-            changelog.versions.find((version) => {
-                return (version.version === lastVersion)
+            changelog.versions.find((versionInfo) => {
+                return (versionInfo.version === version)
             });
 
         if (versionInfo === null)
-            throw `Unable to find the version info for ${lastVersion}`;
+            throw `Unable to find the version info for ${version}`;
 
-        const isPreRelease = /.*(alpha|beta|rc).*/.test(lastVersion);
+        const isPreRelease = /.*(alpha|beta|rc).*/.test(version);
 
         const status = await git.status();
 
@@ -267,7 +266,7 @@ const releaseToGithub =
             await git.add(status.files.map((file) => file.path));
 
             log(chalk.cyan(`Changes found in the repo. We are including them in the commit`));
-            await git.commit(`Release version ${lastVersion}`);
+            await git.commit(`Release version ${version}`);
         }
 
         await git.push();
@@ -308,6 +307,7 @@ new Runner([
     clean,
     restore,
     build,
+    upgradeVersion,
     pack,
     publishToNuget,
     releaseToGithub
